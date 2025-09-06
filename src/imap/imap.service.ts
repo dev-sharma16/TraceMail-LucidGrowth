@@ -43,29 +43,50 @@ export class ImapService implements OnModuleInit, OnModuleDestroy {
     const token = process.env.TEST_SUBJECT_TOKEN || '[TEST]';
     while (this.running) {
       try {
-        const uids = await this.client.search({ seen: false, header: ['subject', token] });
+        const uids = await this.client.search({ seen: false, header: { subject: token } });
         if (uids && uids.length) {
           for (const uid of uids) {
             try {
-              const msg = await this.client.fetchOne(uid, { source: true });
-              const parsed = await simpleParser(msg.source);
+              const msg = await this.client.fetchOne(uid, { source: true, envelope: true });
+              if (!msg) continue;
+              console.log("📧 Incoming email:", {
+                subject: msg.envelope?.subject || 'No subject',
+                from: msg.envelope?.from?.[0]?.address || 'Unknown sender',
+                date: msg.envelope?.date || new Date()
+              });
+              
+              const parsed = await simpleParser(Buffer.isBuffer(msg.source) ? msg.source : Buffer.from(''));
+
               // gather Received headers
-              const receivedLines = parsed.headerLines
-                .filter(h => h.key.toLowerCase() === 'received')
-                .map(h => h.line);
+              const receivedHeaders = parsed.headers.get('received');
+              const receivedLines = (Array.isArray(receivedHeaders) ? receivedHeaders : [receivedHeaders])
+                .filter((header): header is string => typeof header === 'string');
+
               const receivingChain = parseReceivedHeaders(receivedLines);
-              const esp = detectESP(parsed.headerMap, receivingChain, parsed.from?.value?.[0]?.address);
+              const esp = detectESP(parsed.headers as Map<string, any>, receivingChain, parsed.from?.value?.[0]?.address);
+
+              // Handle the 'to' addresses and ensure they're in the correct format
+              const toAddresses: string[] = [];
+              if (parsed.to) {
+                if (Array.isArray(parsed.to)) {
+                  toAddresses.push(...parsed.to.map(addr => addr.text || '').filter(Boolean));
+                } else {
+                  toAddresses.push(parsed.to.text || '');
+                }
+              }
+
               await this.emailService.create({
-                subject: parsed.subject,
-                from: parsed.from?.text,
-                to: parsed.to?.value?.map(v => v.address),
-                rawSource: msg.source,
-                rawHeaders: Object.fromEntries(parsed.headerMap),
+                subject: parsed.subject || '',
+                from: parsed.from?.text || '',
+                to: toAddresses,
+                rawSource: Buffer.isBuffer(msg.source) ? msg.source : Buffer.from(''),
+                rawHeaders: Object.fromEntries(parsed.headers),
                 receivingChain,
                 esp,
                 processedAt: new Date(),
                 receivedAt: parsed.date || new Date(),
               });
+              
               // mark as seen
               await this.client.messageFlagsAdd(uid, ['\\Seen']);
               this.logger.log(`Processed and saved message uid=${uid}`);
