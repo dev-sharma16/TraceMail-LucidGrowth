@@ -43,6 +43,7 @@ export class ImapService implements OnModuleInit, OnModuleDestroy {
     const token = process.env.TEST_SUBJECT_TOKEN || '[TEST]';
     while (this.running) {
       try {
+        await this.client.mailboxOpen('INBOX', { readOnly: false });
         const uids = await this.client.search({ seen: false, header: { subject: token } });
         if (uids && uids.length) {
           for (const uid of uids) {
